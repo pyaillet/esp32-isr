@@ -5,13 +5,11 @@ use std::time::Duration;
 use esp_idf_hal::{gpio::Pin, peripherals::Peripherals};
 use esp_idf_sys::{self, esp, EspError};
 
-static IRQ_TRIGGERED: AtomicBool = AtomicBool::new(false);
-
 #[no_mangle]
 #[inline(never)]
 #[link_section = ".iram1"]
-pub fn irq_triggered(_: &mut ()) {
-    IRQ_TRIGGERED.store(true, std::sync::atomic::Ordering::SeqCst);
+pub fn irq_handler(irq_triggered: &mut AtomicBool) {
+    irq_triggered.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn main() {
@@ -21,13 +19,15 @@ fn main() {
 
     enable_isr_service().unwrap();
 
+    let mut irq_triggered: AtomicBool = AtomicBool::new(false);
+
     let peripherals = Peripherals::take().unwrap();
-    activate_configure_irq(peripherals.pins.gpio35, irq_triggered, &mut ()).unwrap();
+    activate_configure_irq(peripherals.pins.gpio35, irq_handler, &mut irq_triggered).unwrap();
 
     loop {
-        if IRQ_TRIGGERED.load(std::sync::atomic::Ordering::SeqCst) {
+        if irq_triggered.load(std::sync::atomic::Ordering::SeqCst) {
             println!("Triggered !");
-            IRQ_TRIGGERED.store(false, std::sync::atomic::Ordering::SeqCst);
+            irq_triggered.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         thread::sleep(Duration::from_millis(500));
     }
