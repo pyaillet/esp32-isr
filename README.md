@@ -1,7 +1,4 @@
-# Twatch ISR
+# ESP32 isr experiments
 
-Minimal project demonstrating rust-esp32-idf on the TTGO T-Watch 2020 v1 with an
-Interrupt Service Routine handling the AXP202 PMU.
-
-![Photo of the watch displaying "Hello Rust!"](./assets/example.jpg)
-
+Minimal project with an interrupt handler to experiment and validate an approach
+to add interrupt handling in `esp-idf-hal` and `esp-idf-sys`.
