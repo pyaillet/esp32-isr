@@ -2,10 +2,8 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
-use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_hal::{gpio::Pin, peripherals::Peripherals};
 use esp_idf_sys::{self, esp, EspError};
-
-const GPIO_INTR: u8 = 35;
 
 static IRQ_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
@@ -23,8 +21,8 @@ fn main() {
 
     enable_isr_service().unwrap();
 
-    let _peripherals = Peripherals::take().unwrap();
-    activate_configure_irq(GPIO_INTR, irq_triggered, &mut ()).unwrap();
+    let peripherals = Peripherals::take().unwrap();
+    activate_configure_irq(peripherals.pins.gpio35, irq_triggered, &mut ()).unwrap();
 
     loop {
         if IRQ_TRIGGERED.load(std::sync::atomic::Ordering::SeqCst) {
@@ -39,11 +37,16 @@ fn enable_isr_service() -> Result<(), EspError> {
     esp!(unsafe { esp_idf_sys::gpio_install_isr_service(0) })
 }
 
-fn activate_configure_irq<E>(
-    pin: u8,
+fn activate_configure_irq<P, E>(
+    pin: P,
     callback: fn(&mut E),
     context: &mut E,
-) -> Result<(), EspError> {
+) -> Result<(), EspError>
+where
+    P: Pin,
+{
+    let pin: i32 = pin.pin();
+
     use esp_idf_sys::{
         gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
         gpio_pullup_t_GPIO_PULLUP_DISABLE, GPIO_MODE_DEF_INPUT,
