@@ -58,12 +58,12 @@ where
         intr_type: gpio_int_type_t_GPIO_INTR_NEGEDGE,
         pin_bit_mask: 1 << pin,
     };
-    esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin.into()) })?;
+    esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin) })?;
     esp!(unsafe { esp_idf_sys::gpio_config(&gpio_isr_config) })?;
 
     esp!(unsafe {
         esp_idf_sys::gpio_isr_handler_add(
-            pin.into(),
+            pin,
             Some(std::mem::transmute::<
                 fn(&mut E),
                 extern "C" fn(*mut esp_idf_sys::c_types::c_void),
