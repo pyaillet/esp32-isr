@@ -115,10 +115,11 @@ impl<P: Pin> PinNotifySubscription<P> {
         Ok(Self(pin, callback))
     }
 
-    pub fn unsubscribe(self) {
+    pub fn unsubscribe(self) -> Self {
         unsafe {
             gpio_isr_handler_remove(self.0.pin());
         }
+        self
     }
 }
 
