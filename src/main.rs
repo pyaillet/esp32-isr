@@ -1,14 +1,57 @@
-use std::{thread, sync::Arc};
 use std::time::Duration;
+use std::{sync::Arc, thread};
 
+use callback::UnsafeCallback;
 use embedded_svc::event_bus::{EventBus, Postbox};
 use esp_idf_hal::{gpio::Pin, peripherals::Peripherals};
-use esp_idf_svc::{eventloop::{EspBackgroundEventLoop, EspBackgroundSubscription}, sysloop::EspSysLoopStack};
+use esp_idf_svc::{
+    eventloop::{EspBackgroundEventLoop, EspBackgroundSubscription},
+    sysloop::EspSysLoopStack,
+};
 use esp_idf_sys::{self, esp, EspError};
 use log::*;
 
+mod callback {
+    use esp_idf_sys::{c_types, gpio_isr_handler_remove};
+
+    pub struct UnsafeCallback(*mut Box<dyn for<'a> FnMut() + 'static>);
+
+    impl UnsafeCallback {
+        #[allow(clippy::type_complexity)]
+        pub fn from(boxed: &mut Box<Box<dyn for<'a> FnMut() + 'static>>) -> Self {
+            Self(boxed.as_mut())
+        }
+
+        pub unsafe fn from_ptr(ptr: *mut c_types::c_void) -> Self {
+            Self(ptr as *mut _)
+        }
+
+        pub fn as_ptr(&self) -> *mut c_types::c_void {
+            self.0 as *mut _
+        }
+
+        pub unsafe fn call(&mut self) {
+            let reference = self.0.as_mut().unwrap();
+
+            (reference)();
+        }
+    }
+
+    impl Drop for UnsafeCallback {
+        fn drop(self: &mut UnsafeCallback) {
+            println!("Dropping unsafe_callback");
+            unsafe {
+                gpio_isr_handler_remove(35);
+            }
+        }
+    }
+}
+
 mod event {
-    use esp_idf_svc::eventloop::{EspTypedEventSource, EspTypedEventSerializer, EspEventPostData, EspTypedEventDeserializer, EspEventFetchData};
+    use esp_idf_svc::eventloop::{
+        EspEventFetchData, EspEventPostData, EspTypedEventDeserializer, EspTypedEventSerializer,
+        EspTypedEventSource,
+    };
     use esp_idf_sys::c_types;
 
     #[derive(Copy, Clone, Debug)]
@@ -45,8 +88,9 @@ mod event {
     }
 }
 
-pub fn irq_handler(eventloop: &mut EspBackgroundEventLoop) {
-    eventloop.post(&event::EventLoopMessage::new(0), None).unwrap();
+unsafe extern "C" fn irq_handler(unsafe_callback: *mut esp_idf_sys::c_types::c_void) {
+    let mut unsafe_callback = UnsafeCallback::from_ptr(unsafe_callback);
+    unsafe_callback.call()
 }
 
 fn init_eventloop() -> Result<(EspBackgroundEventLoop, EspBackgroundSubscription), EspError> {
@@ -70,14 +114,15 @@ fn main() -> Result<(), EspError> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     #[allow(unused)]
-    let sys_loop_stack = Arc::new(EspSysLoopStack::new()?);
+    let sys_loop_stack: Arc<EspSysLoopStack> = Arc::new(EspSysLoopStack::new()?);
 
     let _res = enable_isr_service();
 
     let (mut eventloop, _subscription) = init_eventloop().unwrap();
 
     let peripherals = Peripherals::take().unwrap();
-    activate_configure_irq(peripherals.pins.gpio35, irq_handler, &mut eventloop).unwrap();
+    let _unsafe_callback = activate_configure_irq(peripherals.pins.gpio35, move || { eventloop.post(&event::EventLoopMessage::new(1), None).unwrap(); }).unwrap();
+
 
     loop {
         thread::sleep(Duration::from_millis(2000));
@@ -88,11 +133,10 @@ fn enable_isr_service() -> Result<(), EspError> {
     esp!(unsafe { esp_idf_sys::gpio_install_isr_service(0) })
 }
 
-fn activate_configure_irq<P, E>(
+fn activate_configure_irq<P>(
     pin: P,
-    callback: fn(&mut E),
-    context: &mut E,
-) -> Result<(), EspError>
+    callback: impl for<'a> FnMut() + 'static,
+) -> Result<UnsafeCallback, EspError>
 where
     P: Pin,
 {
@@ -112,16 +156,13 @@ where
     esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin) })?;
     esp!(unsafe { esp_idf_sys::gpio_config(&gpio_isr_config) })?;
 
-    // Casting from Rust generic type to native C format
-    let callback = unsafe {
-        std::mem::transmute::<fn(&mut E), extern "C" fn(*mut esp_idf_sys::c_types::c_void)>(
-            callback,
-        )
-    };
+    let callback: Box<dyn for<'a> FnMut() + 'static> = Box::new(callback);
+    let mut callback = Box::new(callback);
 
-    // Casting from Rust generic type to native C format
-    let context =
-        unsafe { std::mem::transmute::<&mut E, *mut esp_idf_sys::c_types::c_void>(context) };
+    let mut unsafe_callback = callback::UnsafeCallback::from(&mut callback);
+    unsafe { unsafe_callback.call(); }
 
-    esp!(unsafe { esp_idf_sys::gpio_isr_handler_add(pin, Some(callback), context) })
+    esp!(unsafe { esp_idf_sys::gpio_isr_handler_add(pin, Some(irq_handler), unsafe_callback.as_ptr()) })?;
+
+    Ok(unsafe_callback)
 }
