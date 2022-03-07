@@ -20,6 +20,7 @@ native = ["esp-idf-sys/native"]
 esp-idf-hal = { version = "0.33" }
 esp-idf-sys = { version = "0.30", features = ["binstart"] }
 esp-idf-svc = { version = "0.37.2" }
+esp-idf-isr = { git = "https://github.com/pyaillet/esp-idf-isr.git" }
 embedded-svc = { version = "0.17.3" }
 embedded-hal = { version = "0.2.7" }
 log = { version = "0.4" }
