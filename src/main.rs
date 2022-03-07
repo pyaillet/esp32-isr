@@ -8,11 +8,11 @@ use esp_idf_svc::{
     eventloop::{EspBackgroundEventLoop, EspBackgroundSubscription},
     sysloop::EspSysLoopStack,
 };
-use esp_idf_sys::{self, esp, EspError};
+use esp_idf_sys::{self, esp, EspError, gpio_isr_handler_remove};
 use log::*;
 
 mod callback {
-    use esp_idf_sys::{c_types, gpio_isr_handler_remove};
+    use esp_idf_sys::c_types;
 
     pub struct UnsafeCallback(*mut Box<dyn for<'a> FnMut() + 'static>);
 
@@ -34,15 +34,6 @@ mod callback {
             let reference = self.0.as_mut().unwrap();
 
             (reference)();
-        }
-    }
-
-    impl Drop for UnsafeCallback {
-        fn drop(self: &mut UnsafeCallback) {
-            println!("Dropping unsafe_callback");
-            unsafe {
-                gpio_isr_handler_remove(35);
-            }
         }
     }
 }
@@ -88,9 +79,52 @@ mod event {
     }
 }
 
+struct PinNotifySubscription<P: Pin>(P, Box<Box<dyn for<'a> FnMut()>>);
+
+impl<P: Pin> PinNotifySubscription<P> {
+    pub fn subscribe(pin: P, callback: impl for<'a> FnMut() + 'static) -> Result<Self, EspError> {
+        let pin_number: i32 = pin.pin();
+
+        use esp_idf_sys::{
+            gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
+            gpio_pullup_t_GPIO_PULLUP_DISABLE, GPIO_MODE_DEF_INPUT,
+        };
+        let gpio_isr_config = esp_idf_sys::gpio_config_t {
+            mode: GPIO_MODE_DEF_INPUT,
+            pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
+            pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
+            intr_type: gpio_int_type_t_GPIO_INTR_NEGEDGE,
+            pin_bit_mask: 1 << pin_number,
+        };
+        esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin_number) })?;
+        esp!(unsafe { esp_idf_sys::gpio_config(&gpio_isr_config) })?;
+
+        let callback: Box<dyn for<'a> FnMut() + 'static> = Box::new(callback);
+        let mut callback = Box::new(callback);
+
+        let unsafe_callback = callback::UnsafeCallback::from(&mut callback);
+
+        esp!(unsafe {
+            esp_idf_sys::gpio_isr_handler_add(
+                pin_number,
+                Some(irq_handler),
+                unsafe_callback.as_ptr(),
+            )
+        })?;
+
+        Ok(Self(pin, callback))
+    }
+
+    pub fn unsubscribe(self) {
+        unsafe {
+            gpio_isr_handler_remove(self.0.pin());
+        }
+    }
+}
+
 unsafe extern "C" fn irq_handler(unsafe_callback: *mut esp_idf_sys::c_types::c_void) {
     let mut unsafe_callback = UnsafeCallback::from_ptr(unsafe_callback);
-    unsafe_callback.call()
+    unsafe_callback.call();
 }
 
 fn init_eventloop() -> Result<(EspBackgroundEventLoop, EspBackgroundSubscription), EspError> {
@@ -121,48 +155,20 @@ fn main() -> Result<(), EspError> {
     let (mut eventloop, _subscription) = init_eventloop().unwrap();
 
     let peripherals = Peripherals::take().unwrap();
-    let _unsafe_callback = activate_configure_irq(peripherals.pins.gpio35, move || { eventloop.post(&event::EventLoopMessage::new(1), None).unwrap(); }).unwrap();
-
+    let subscription = PinNotifySubscription::subscribe(peripherals.pins.gpio35, move || {
+        eventloop
+            .post(&event::EventLoopMessage::new(1), None)
+            .unwrap();
+    })
+    .unwrap();
 
     loop {
         thread::sleep(Duration::from_millis(2000));
     }
+    subscription.unsubscribe();
 }
 
 fn enable_isr_service() -> Result<(), EspError> {
     esp!(unsafe { esp_idf_sys::gpio_install_isr_service(0) })
 }
 
-fn activate_configure_irq<P>(
-    pin: P,
-    callback: impl for<'a> FnMut() + 'static,
-) -> Result<UnsafeCallback, EspError>
-where
-    P: Pin,
-{
-    let pin: i32 = pin.pin();
-
-    use esp_idf_sys::{
-        gpio_int_type_t_GPIO_INTR_NEGEDGE, gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-        gpio_pullup_t_GPIO_PULLUP_DISABLE, GPIO_MODE_DEF_INPUT,
-    };
-    let gpio_isr_config = esp_idf_sys::gpio_config_t {
-        mode: GPIO_MODE_DEF_INPUT,
-        pull_up_en: gpio_pullup_t_GPIO_PULLUP_DISABLE,
-        pull_down_en: gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
-        intr_type: gpio_int_type_t_GPIO_INTR_NEGEDGE,
-        pin_bit_mask: 1 << pin,
-    };
-    esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin) })?;
-    esp!(unsafe { esp_idf_sys::gpio_config(&gpio_isr_config) })?;
-
-    let callback: Box<dyn for<'a> FnMut() + 'static> = Box::new(callback);
-    let mut callback = Box::new(callback);
-
-    let mut unsafe_callback = callback::UnsafeCallback::from(&mut callback);
-    unsafe { unsafe_callback.call(); }
-
-    esp!(unsafe { esp_idf_sys::gpio_isr_handler_add(pin, Some(irq_handler), unsafe_callback.as_ptr()) })?;
-
-    Ok(unsafe_callback)
-}
