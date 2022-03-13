@@ -3,13 +3,12 @@ use std::{sync::Arc, thread};
 
 use embedded_svc::event_bus::{EventBus, Postbox};
 
-use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_hal::{gpio::{InterruptType, Pull}, peripherals::Peripherals};
 use esp_idf_svc::{
     eventloop::{EspBackgroundEventLoop, EspBackgroundSubscription},
     sysloop::EspSysLoopStack,
 };
 use esp_idf_sys::EspError;
-use esp_idf_isr::InputPinNotify;
 
 use log::*;
 
@@ -59,8 +58,8 @@ fn init_eventloop() -> Result<(EspBackgroundEventLoop, EspBackgroundSubscription
     let mut eventloop = EspBackgroundEventLoop::new(&Default::default())?;
 
     info!("About to subscribe to the background event loop");
-    let subscription = eventloop.subscribe(|_ev: &event::EventLoopMessage| {
-        info!("Got event from the event loop");
+    let subscription = eventloop.subscribe(|ev: &event::EventLoopMessage| {
+        info!("Got event from the event loop {:?}", ev);
     })?;
 
     Ok((eventloop, subscription))
@@ -80,16 +79,40 @@ fn main() -> Result<(), EspError> {
     let (mut eventloop, _subscription) = init_eventloop().unwrap();
 
     let peripherals = Peripherals::take().unwrap();
-    let interrupt_pin = peripherals.pins.gpio35.into_input().unwrap();
-    let _subscription = unsafe {
-        interrupt_pin.subscribe(move || {
-            eventloop.post(&event::EventLoopMessage::new(1), None).unwrap();
-        })?
+    let interrupt_pin = peripherals
+        .pins
+        .gpio0
+        .into_input()
+        .unwrap()
+        .into_pull_up()
+        .unwrap();
+    let mut eventloop2 = eventloop.clone();
+    let subscribed = unsafe {
+        interrupt_pin.into_subscribed(
+            move || {
+                eventloop
+                    .post(&event::EventLoopMessage::new(1), None)
+                    .unwrap();
+            },
+            InterruptType::NegEdge,
+        )?
+    };
+
+    let input = subscribed.unsubscribe().unwrap();
+
+    let _subscribed = unsafe {
+        input.into_subscribed(
+            move || {
+                eventloop2
+                    .post(&event::EventLoopMessage::new(2), None)
+                    .unwrap();
+            },
+            InterruptType::NegEdge,
+        )?
+
     };
 
     loop {
         thread::sleep(Duration::from_millis(2000));
     }
 }
-
-
