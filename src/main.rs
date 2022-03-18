@@ -1,7 +1,10 @@
 use std::time::Duration;
 use std::{sync::Arc, thread};
+use std::rc::Rc;
 
 use embedded_svc::event_bus::{EventBus, Postbox};
+use embedded_hal::digital::v2::InputPin;
+
 
 use esp_idf_hal::{gpio::{InterruptType, Pull}, peripherals::Peripherals};
 use esp_idf_svc::{
@@ -78,6 +81,9 @@ fn main() -> Result<(), EspError> {
 
     let (mut eventloop, _subscription) = init_eventloop().unwrap();
 
+    let isr_service = esp_idf_hal::gpio::Service::new(0).unwrap();
+    let isr_service = Rc::new(isr_service);
+
     let peripherals = Peripherals::take().unwrap();
     let interrupt_pin = peripherals
         .pins
@@ -89,6 +95,7 @@ fn main() -> Result<(), EspError> {
     let mut eventloop2 = eventloop.clone();
     let subscribed = unsafe {
         interrupt_pin.into_subscribed(
+            &isr_service,
             move || {
                 eventloop
                     .post(&event::EventLoopMessage::new(1), None)
@@ -97,11 +104,13 @@ fn main() -> Result<(), EspError> {
             InterruptType::NegEdge,
         )?
     };
+    println!("Subscribed is in {:?} state", &subscribed.is_high());
 
-    let input = subscribed.unsubscribe().unwrap();
+    let input = subscribed.into_input().unwrap();
 
     let _subscribed = unsafe {
         input.into_subscribed(
+            &isr_service,
             move || {
                 eventloop2
                     .post(&event::EventLoopMessage::new(2), None)
