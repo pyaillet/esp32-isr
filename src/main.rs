@@ -98,7 +98,7 @@ fn main() -> Result<(), EspError> {
         )?
     };
 
-    let input = subscribed.unsubscribe().unwrap();
+    let input = subscribed.into_input().unwrap();
 
     let _subscribed = unsafe {
         input.into_subscribed(
